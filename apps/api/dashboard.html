@@ -1,0 +1,536 @@
+```html
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Devin Automation – GitHub Issues</title>
+    <style>
+      body { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial; margin: 0; background: #f6f7fb; }
+      header { background: #111827; color: white; padding: 16px 20px; display:flex; align-items:center; justify-content:space-between; }
+      header h1 { font-size: 16px; margin: 0; font-weight: 600; letter-spacing: 0.2px; }
+      header .meta { font-size: 12px; opacity: 0.8; }
+
+      .container { max-width: 1100px; margin: 20px auto; padding: 0 16px; }
+      .grid { display: grid; grid-template-columns: 1.15fr 0.85fr; gap: 16px; }
+
+      .card { background: white; border-radius: 14px; box-shadow: 0 6px 18px rgba(0,0,0,0.06); padding: 14px; }
+      .card h2 { margin: 0 0 10px; font-size: 14px; color: #111827; }
+      .muted { color: #6b7280; font-size: 12px; }
+
+      .issue { border: 1px solid #e5e7eb; border-radius: 12px; padding: 12px; margin-bottom: 10px; }
+      .issue-top { display:flex; align-items:flex-start; justify-content:space-between; gap: 10px; }
+      .issue-title { font-size: 13px; font-weight: 600; color:#111827; margin: 0; }
+      .issue-sub { margin-top: 4px; font-size: 12px; color:#6b7280; }
+
+      .btns { display:flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+      button {
+        border: 1px solid #e5e7eb; background: #111827; color: white;
+        border-radius: 10px; padding: 8px 10px; font-size: 12px; cursor:pointer;
+        transition: transform 0.08s ease, filter 0.08s ease;
+      }
+      button.secondary { background: white; color:#111827; }
+      button:disabled { opacity: 0.5; cursor: not-allowed; }
+      button:hover { filter: brightness(0.95); transform: translateY(-1px); }
+      button:active { transform: translateY(0px); }
+
+      .pill { display:inline-flex; align-items:center; gap:6px; border-radius: 999px; padding: 4px 10px; font-size: 12px; border: 1px solid #e5e7eb; user-select: none; cursor: default; }
+      .pill.good { background: #ecfdf5; border-color: #a7f3d0; color:#065f46; }
+      .pill.warn { background: #fffbeb; border-color: #fcd34d; color:#92400e; }
+      .pill.bad { background: #fff1f2; border-color: #fecaca; color:#991b1b; }
+      .pill.neutral { background: #f3f4f6; color:#374151; }
+
+      pre { background: #0b1020; color: #e5e7eb; padding: 12px; border-radius: 12px; overflow:auto; font-size: 12px; }
+      a { color: #2563eb; text-decoration: none; }
+      a:hover { text-decoration: underline; }
+      .row { display:flex; gap: 10px; align-items:center; flex-wrap: wrap; }
+      .spacer { height: 10px; }
+      .small { font-size: 12px; }
+
+      .loading {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 12px;
+        color: #6b7280;
+        user-select: none;
+      }
+      .spinner {
+        width: 14px;
+        height: 14px;
+        border: 2px solid #e5e7eb;
+        border-top-color: #111827;
+        border-radius: 50%;
+        animation: spin 0.8s linear infinite;
+      }
+      @keyframes spin { to { transform: rotate(360deg); } }
+    </style>
+  </head>
+
+  <body>
+    <header>
+      <h1>Devin Automation – GitHub Issue Triage & Execution</h1>
+      <div class="meta" id="meta">API: http://127.0.0.1:8000</div>
+    </header>
+
+    <div class="container">
+      <div id="banner" class="card" style="display:none; border:1px solid #fecaca; background:#fff1f2;">
+        <div style="font-weight:600; color:#991b1b;">Something went wrong</div>
+        <div id="bannerText" class="muted"></div>
+      </div>
+      <div class="spacer"></div>
+
+      <div class="grid">
+        <div class="card">
+          <h2>Issue Queue</h2>
+          <div class="muted">Select an issue, then triage or execute. Status updates live.</div>
+          <div class="spacer"></div>
+          <div id="issues"></div>
+        </div>
+
+        <div class="card">
+          <h2>Details</h2>
+          <div id="details" class="muted">Pick an issue to view details.</div>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      const API = ""; // same-origin
+      let selectedIssue = null;
+      let pollTimer = null;
+
+      function el(id){ return document.getElementById(id); }
+      function esc(s){ return (s ?? "").toString().replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;"); }
+
+      function showError(msg){
+        const b = el("banner");
+        el("bannerText").textContent = msg;
+        b.style.display = "block";
+      }
+      function clearError(){
+        const b = el("banner");
+        b.style.display = "none";
+        el("bannerText").textContent = "";
+      }
+
+      window.addEventListener("error", (e) => showError("JS error: " + e.message));
+      window.addEventListener("unhandledrejection", (e) => showError("Promise error: " + e.reason));
+
+      function setLoading(isLoading, text="Working…") {
+        const row = document.getElementById("loadingRow");
+        const t = document.getElementById("loadingText");
+        if (!row || !t) return;
+
+        row.style.display = isLoading ? "inline-flex" : "none";
+        t.textContent = text;
+
+        ["btnTriage","btnExecute","btnForceTriage","btnForceExec","btnClearCache"].forEach(id => {
+          const b = document.getElementById(id);
+          if (b) b.disabled = isLoading;
+        });
+      }
+
+      function setAction(text, kind="neutral") {
+        const a = document.getElementById("actionText");
+        if (!a) return;
+        a.className = `pill ${kind}`;
+        a.textContent = text;
+      }
+
+      async function nextPaint() {
+        return new Promise((resolve) => requestAnimationFrame(() => resolve()));
+      }
+
+      async function runAction(label, fn) {
+        setAction(label, "warn");
+        setLoading(true, label);
+        await nextPaint();
+        try {
+          await fn();
+        } catch (e) {
+          console.error(e);
+        } finally {
+          // IMPORTANT: we do NOT set action back to Idle here.
+          // Polling will own the action state.
+          setLoading(false);
+        }
+      }
+
+      function formatErrorText(path, status, bodyText) {
+        try {
+          const obj = JSON.parse(bodyText);
+          const detail = obj.detail ?? obj;
+
+          if (typeof detail === "object" && detail !== null) {
+            const msg = detail.message || detail.error || bodyText;
+            const retry = detail.retry_after_seconds ?? detail.retry_after_s ?? null;
+            if (retry !== null) return `${path} → ${status}: ${msg} (retry in ~${retry}s)`;
+            return `${path} → ${status}: ${msg}`;
+          }
+          return `${path} → ${status}: ${detail}`;
+        } catch (e) {
+          return `${path} → ${status}: ${bodyText}`;
+        }
+      }
+
+      async function apiGet(path){
+        clearError();
+        const r = await fetch(API + path);
+        const text = await r.text();
+        if(!r.ok) {
+          showError(formatErrorText(path, r.status, text));
+          throw new Error(text);
+        }
+        if (!text || text === "null") return null;
+        return JSON.parse(text);
+      }
+
+      async function apiPost(path){
+        clearError();
+        const r = await fetch(API + path, { method:"POST" });
+        const text = await r.text();
+        if(!r.ok) {
+          showError(formatErrorText(path, r.status, text));
+          throw new Error(text);
+        }
+        return text ? JSON.parse(text) : {};
+      }
+
+      function scorePill(score){
+        if(score === null || score === undefined) return `<span class="pill neutral">No score</span>`;
+        if(score >= 0.85) return `<span class="pill good">Confidence ${score}</span>`;
+        if(score >= 0.6) return `<span class="pill warn">Confidence ${score}</span>`;
+        return `<span class="pill bad">Confidence ${score}</span>`;
+      }
+
+      function execSummary(exec){
+        const so = exec?.structured_output || {};
+        const pr = exec?.pull_request_url || so.pull_request_url || "";
+        if (pr) return `<span class="pill good">PR ready</span>`;
+        if (exec) return `<span class="pill warn">Execution started</span>`;
+        return `<span class="pill neutral">No execution yet</span>`;
+      }
+
+      function triageSummary(triage){
+        const so = triage?.structured_output || {};
+        const rec = so.recommended_next_action || "";
+        if (!triage) return `<span class="pill neutral">No triage yet</span>`;
+        if (rec === "needs_info") return `<span class="pill bad">Needs info</span>`;
+        if (rec === "needs_human") return `<span class="pill bad">Needs human</span>`;
+        if (rec === "execute") return `<span class="pill good">Ready</span>`;
+        return `<span class="pill neutral">${esc(rec || "Triage complete")}</span>`;
+      }
+
+      function verifySummary(verify){
+        const so = verify?.structured_output || {};
+        if (!verify) return `<span class="pill neutral">Not verified</span>`;
+        if (so.all_tests_passed === true && so.ready_to_merge === true) {
+          return `<span class="pill good">Ready to merge</span>`;
+        }
+        if (so.all_tests_passed === false) {
+          return `<span class="pill bad">Tests failed</span>`;
+        }
+        if (verify) return `<span class="pill warn">Verifying...</span>`;
+        return `<span class="pill neutral">Not verified</span>`;
+      }
+
+      function clearPolling(){
+        if(pollTimer) clearInterval(pollTimer);
+        pollTimer = null;
+      }
+
+      async function loadIssues(){
+        const issues = await apiGet("/issues");
+        const container = el("issues");
+        container.innerHTML = "";
+
+        issues.forEach(it => {
+          const div = document.createElement("div");
+          div.className = "issue";
+          div.innerHTML = `
+            <div class="issue-top">
+              <div>
+                <div class="issue-title">#${it.number} — ${esc(it.title)}</div>
+                <div class="issue-sub">${esc(it.state)} · ${it.updated_at ? esc(it.updated_at) : ""}</div>
+              </div>
+              <button class="secondary">View</button>
+            </div>
+          `;
+          div.querySelector("button").onclick = () => selectIssue(it.number, it.title);
+          container.appendChild(div);
+        });
+      }
+
+      async function selectIssue(number, title){
+        selectedIssue = { number, title };
+        clearPolling();
+        await renderDetails();
+      }
+
+      async function renderDetails(){
+        if (!selectedIssue) return;
+
+        const num = selectedIssue.number;
+        const title = selectedIssue.title;
+
+        let triage = null;
+        let exec = null;
+        let verify = null;
+        try { triage = await apiGet(`/issues/${num}/triage`); } catch(e){}
+        try { exec = await apiGet(`/issues/${num}/execute`); } catch(e){}
+        try { verify = await apiGet(`/issues/${num}/verify`); } catch(e){}
+
+        const triageScore = triage?.structured_output?.confidence_score ?? null;
+        const prUrl = exec?.pull_request_url || exec?.structured_output?.pull_request_url || "";
+        const triageRec = triage?.structured_output?.recommended_next_action || "";
+        const verifyPassed = verify?.structured_output?.all_tests_passed ?? null;
+        const readyToMerge = verify?.structured_output?.ready_to_merge ?? null;
+
+        el("details").innerHTML = `
+          <div class="row">
+            <div class="small"><strong>Issue #${num}</strong> — ${esc(title)}</div>
+          </div>
+
+          <div class="spacer"></div>
+
+          <div class="row">
+            ${scorePill(triageScore)}
+            ${triageSummary(triage)}
+            ${execSummary(exec)}
+            ${verifySummary(verify)}
+            <div class="muted">Current action:</div>
+            <span id="actionText" class="pill neutral">Idle</span>
+            <div class="muted">Devin status:</div>
+            <span id="liveStatusPill" class="pill neutral">Unknown</span>
+          </div>
+
+          <div class="spacer"></div>
+
+          <div class="btns">
+            <button id="btnTriage">Triage</button>
+            <button id="btnExecute" class="secondary">Execute</button>
+            <button id="btnVerifyPR" class="secondary">Verify on PR</button>
+            <button id="btnForceTriage" class="secondary">Force Triage</button>
+            <button id="btnClearCache" class="secondary">Clear cache</button>
+            <button id="btnForceExec" class="secondary">Force Execute</button>
+          </div>
+
+          <div class="spacer"></div>
+          <div id="loadingRow" class="loading" style="display:none;">
+            <div class="spinner"></div>
+            <div id="loadingText">Working…</div>
+          </div>
+
+          <div class="spacer"></div>
+
+          <div class="row">
+            <div class="muted">Triage session:</div>
+            ${triage?.session_url ? `<a href="${triage.session_url}" target="_blank">Open Devin</a>` : `<span class="muted">—</span>`}
+          </div>
+          <div class="row">
+            <div class="muted">Execute session:</div>
+            ${exec?.session_url ? `<a href="${exec.session_url}" target="_blank">Open Devin</a>` : `<span class="muted">—</span>`}
+          </div>
+          <div class="row">
+            <div class="muted">Verify session:</div>
+            ${verify?.session_url ? `<a href="${verify.session_url}" target="_blank">Open Devin</a>` : `<span class="muted">—</span>`}
+          </div>
+          <div class="row">
+            <div class="muted">Pull request:</div>
+            ${prUrl ? `<a href="${prUrl}" target="_blank">${prUrl}</a>` : `<span class="muted">—</span>`}
+          </div>
+
+          ${triageRec === "needs_info" || triageRec === "needs_human" ? `
+            <div class="spacer"></div>
+            <div class="card" style="border:1px solid #fecaca; background:#fff1f2;">
+              <div style="font-weight:600; color:#991b1b;">${triageRec === "needs_info" ? "Needs info before execution" : "Needs human approval before execution"}</div>
+              <div class="muted">Triage is asking for clarification. You can answer these in the issue thread, or click “Force Execute” to proceed anyway.</div>
+              <ul class="muted" style="margin:8px 0 0 18px;">
+                ${(triage?.structured_output?.questions_for_reporter || []).map(q => `<li>${esc(q)}</li>`).join("") || "<li>(No questions listed)</li>"}
+              </ul>
+            </div>
+          ` : ""}
+
+          <div class="spacer"></div>
+
+          <div class="muted">Triage output</div>
+          <pre>${esc(JSON.stringify(triage?.structured_output || {}, null, 2))}</pre>
+
+          <div class="muted">Execute output</div>
+          <pre>${esc(JSON.stringify(exec?.structured_output || {}, null, 2))}</pre>
+
+          <div class="muted">Verify output</div>
+          <pre>${esc(JSON.stringify(verify?.structured_output || {}, null, 2))}</pre>
+
+          <div class="muted">Live status</div>
+          <pre id="status">${esc("No live session selected yet.")}</pre>
+        `;
+
+        // Wire buttons
+        el("btnTriage").onclick = () =>
+          runAction("Triage started…", async () => {
+            await apiPost(`/issues/${num}/triage?force=false`);
+            await renderDetails();
+            startPolling();
+          });
+
+        el("btnClearCache").onclick = () =>
+        runAction("Clearing cache…", async () => {
+            await fetch(`${API}/issues/${num}/cache`, { method: "DELETE" }).then(async r => {
+            const text = await r.text();
+            if (!r.ok) throw new Error(text);
+            return text ? JSON.parse(text) : {};
+            });
+
+            // Stop polling + refresh UI
+            clearPolling();
+            await renderDetails();
+            setAction("Idle", "neutral");
+        });
+
+        el("btnExecute").onclick = () =>
+          runAction("Execution started…", async () => {
+            await apiPost(`/issues/${num}/execute?force=false`);
+            await renderDetails();
+            startPolling();
+          });
+
+        el("btnVerifyPR").onclick = () =>
+          runAction("PR verification started…", async () => {
+            await apiPost(`/issues/${num}/verify?force=false`);
+            await renderDetails();
+            startPolling();
+          });
+
+        el("btnForceTriage").onclick = () =>
+          runAction("Force triage started…", async () => {
+            await apiPost(`/issues/${num}/triage?force=true`);
+            await renderDetails();
+            startPolling();
+          });
+
+        el("btnForceExec").onclick = () =>
+          runAction("Force execution started…", async () => {
+            await apiPost(`/issues/${num}/execute?force=true`);
+            await renderDetails();
+            startPolling();
+          });
+
+        startPolling();
+      }
+
+      async function startPolling(){
+        clearPolling();
+        if (!selectedIssue) return;
+
+        const num = selectedIssue.number;
+
+        let exec = null, triage = null, verify = null;
+        try { exec = await apiGet(`/issues/${num}/execute`); } catch(e){}
+        try { triage = await apiGet(`/issues/${num}/triage`); } catch(e){}
+        try { verify = await apiGet(`/issues/${num}/verify`); } catch(e){}
+
+        const sessionId = verify?.session_id || exec?.session_id || triage?.session_id;
+        const triageRec = triage?.structured_output?.recommended_next_action || "";
+
+        const st = el("status");
+        if(!sessionId){
+          if (st) st.textContent = "No session to poll yet.";
+          setAction("Idle", "neutral");
+          const pill = document.getElementById("liveStatusPill");
+          if (pill) { pill.className = "pill neutral"; pill.textContent = "Unknown"; }
+          return;
+        }
+
+        if (triageRec === "needs_info") setAction("Needs info", "bad");
+        else if (triageRec === "needs_human") setAction("Needs human", "bad");
+
+        async function tick(){
+          try{
+            const s = await apiGet(`/devin/sessions/${sessionId}`);
+            const statusEnum = s.status_enum || s.status || "unknown";
+            const pr = s.pull_request?.url || s.structured_output?.pull_request_url || "";
+            const summary = s.structured_output?.result_summary || s.structured_output?.issue_summary || "";
+
+            // Sync the database with the latest session data
+            if (verify?.session_id === sessionId) {
+              try {
+                await apiPost(`/issues/${num}/sync-verify`);
+              } catch(e) {
+                // Sync errors are non-critical, just log
+                console.warn("Verify sync failed:", e);
+              }
+            } else if (exec?.session_id === sessionId) {
+              try {
+                await apiPost(`/issues/${num}/sync-exec`);
+              } catch(e) {
+                // Sync errors are non-critical, just log
+                console.warn("Exec sync failed:", e);
+              }
+            } else if (triage?.session_id === sessionId) {
+              try {
+                await apiPost(`/issues/${num}/sync-triage`);
+              } catch(e) {
+                // Sync errors are non-critical, just log
+                console.warn("Triage sync failed:", e);
+              }
+            }
+
+            // ✅ Update live status pill AFTER statusEnum exists
+            const pill = document.getElementById("liveStatusPill");
+            if (pill) {
+              const x = (statusEnum || "").toLowerCase();
+              if (["working","running"].includes(x)) {
+                pill.className = "pill warn";
+                pill.textContent = "Running…";
+              } else if (["completed","finished"].includes(x)) {
+                pill.className = "pill good";
+                pill.textContent = "Done";
+              } else if (["failed","error","cancelled"].includes(x)) {
+                pill.className = "pill bad";
+                pill.textContent = "Stopped";
+              } else {
+                pill.className = "pill neutral";
+                pill.textContent = statusEnum;
+              }
+            }
+
+            // Only set "blocked" based on triage recommendation, not statusEnum
+            const statusLower = (statusEnum || "").toLowerCase();
+            if (triageRec !== "needs_info" && triageRec !== "needs_human") {
+              if (["working","running"].includes(statusLower)) setAction("In progress…", "warn");
+              else if (["completed","finished"].includes(statusLower)) setAction("Done", "good");
+              else if (["failed","error","cancelled"].includes(statusLower)) setAction("Stopped", "bad");
+              else setAction("Idle", "neutral");
+            }
+
+            if (st) {
+              st.textContent = JSON.stringify({
+                status: statusEnum,
+                updated_at: s.updated_at,
+                pr_url: pr,
+                summary: summary
+              }, null, 2);
+            }
+
+            if(pr){
+              await renderDetails();
+              clearPolling();
+            }
+          } catch(e){
+            if (st) st.textContent = "Polling error: " + e.toString();
+          }
+        }
+
+        await tick();
+        pollTimer = setInterval(tick, 5000);
+      }
+
+      (async function init(){
+        await loadIssues();
+        el("meta").textContent = "API: " + window.location.origin + " · Dashboard: /dashboard";
+      })();
+    </script>
+  </body>
+</html>
