@@ -222,19 +222,6 @@
         return `<span class="pill neutral">${esc(rec || "Triage complete")}</span>`;
       }
 
-      function verifySummary(verify){
-        const so = verify?.structured_output || {};
-        if (!verify) return `<span class="pill neutral">Not verified</span>`;
-        if (so.all_tests_passed === true && so.ready_to_merge === true) {
-          return `<span class="pill good">Ready to merge</span>`;
-        }
-        if (so.all_tests_passed === false) {
-          return `<span class="pill bad">Tests failed</span>`;
-        }
-        if (verify) return `<span class="pill warn">Verifying...</span>`;
-        return `<span class="pill neutral">Not verified</span>`;
-      }
-
       function clearPolling(){
         if(pollTimer) clearInterval(pollTimer);
         pollTimer = null;
@@ -276,16 +263,12 @@
 
         let triage = null;
         let exec = null;
-        let verify = null;
         try { triage = await apiGet(`/issues/${num}/triage`); } catch(e){}
         try { exec = await apiGet(`/issues/${num}/execute`); } catch(e){}
-        try { verify = await apiGet(`/issues/${num}/verify`); } catch(e){}
 
         const triageScore = triage?.structured_output?.confidence_score ?? null;
         const prUrl = exec?.pull_request_url || exec?.structured_output?.pull_request_url || "";
         const triageRec = triage?.structured_output?.recommended_next_action || "";
-        const verifyPassed = verify?.structured_output?.all_tests_passed ?? null;
-        const readyToMerge = verify?.structured_output?.ready_to_merge ?? null;
 
         el("details").innerHTML = `
           <div class="row">
@@ -298,7 +281,6 @@
             ${scorePill(triageScore)}
             ${triageSummary(triage)}
             ${execSummary(exec)}
-            ${verifySummary(verify)}
             <div class="muted">Current action:</div>
             <span id="actionText" class="pill neutral">Idle</span>
             <div class="muted">Devin status:</div>
@@ -310,7 +292,6 @@
           <div class="btns">
             <button id="btnTriage">Triage</button>
             <button id="btnExecute" class="secondary">Execute</button>
-            <button id="btnVerifyPR" class="secondary">Verify on PR</button>
             <button id="btnForceTriage" class="secondary">Force Triage</button>
             <button id="btnClearCache" class="secondary">Clear cache</button>
             <button id="btnForceExec" class="secondary">Force Execute</button>
@@ -331,10 +312,6 @@
           <div class="row">
             <div class="muted">Execute session:</div>
             ${exec?.session_url ? `<a href="${exec.session_url}" target="_blank">Open Devin</a>` : `<span class="muted">—</span>`}
-          </div>
-          <div class="row">
-            <div class="muted">Verify session:</div>
-            ${verify?.session_url ? `<a href="${verify.session_url}" target="_blank">Open Devin</a>` : `<span class="muted">—</span>`}
           </div>
           <div class="row">
             <div class="muted">Pull request:</div>
@@ -359,9 +336,6 @@
 
           <div class="muted">Execute output</div>
           <pre>${esc(JSON.stringify(exec?.structured_output || {}, null, 2))}</pre>
-
-          <div class="muted">Verify output</div>
-          <pre>${esc(JSON.stringify(verify?.structured_output || {}, null, 2))}</pre>
 
           <div class="muted">Live status</div>
           <pre id="status">${esc("No live session selected yet.")}</pre>
@@ -396,13 +370,6 @@
             startPolling();
           });
 
-        el("btnVerifyPR").onclick = () =>
-          runAction("PR verification started…", async () => {
-            await apiPost(`/issues/${num}/verify?force=false`);
-            await renderDetails();
-            startPolling();
-          });
-
         el("btnForceTriage").onclick = () =>
           runAction("Force triage started…", async () => {
             await apiPost(`/issues/${num}/triage?force=true`);
@@ -426,12 +393,11 @@
 
         const num = selectedIssue.number;
 
-        let exec = null, triage = null, verify = null;
+        let exec = null, triage = null;
         try { exec = await apiGet(`/issues/${num}/execute`); } catch(e){}
         try { triage = await apiGet(`/issues/${num}/triage`); } catch(e){}
-        try { verify = await apiGet(`/issues/${num}/verify`); } catch(e){}
 
-        const sessionId = verify?.session_id || exec?.session_id || triage?.session_id;
+        const sessionId = exec?.session_id || triage?.session_id;
         const triageRec = triage?.structured_output?.recommended_next_action || "";
 
         const st = el("status");
@@ -454,14 +420,7 @@
             const summary = s.structured_output?.result_summary || s.structured_output?.issue_summary || "";
 
             // Sync the database with the latest session data
-            if (verify?.session_id === sessionId) {
-              try {
-                await apiPost(`/issues/${num}/sync-verify`);
-              } catch(e) {
-                // Sync errors are non-critical, just log
-                console.warn("Verify sync failed:", e);
-              }
-            } else if (exec?.session_id === sessionId) {
+            if (exec?.session_id === sessionId) {
               try {
                 await apiPost(`/issues/${num}/sync-exec`);
               } catch(e) {

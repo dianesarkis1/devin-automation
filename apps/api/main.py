@@ -4,7 +4,7 @@ load_dotenv()
 from typing import Any
 from github_client import get_issue, list_issue_comments
 from devin_client import create_session, DevinRateLimitError, get_session
-from store import init_db, get_triage, upsert_triage, get_exec, upsert_exec, get_verify, upsert_verify, DB_PATH
+from store import init_db, get_triage, upsert_triage, get_exec, upsert_exec, DB_PATH
 
 
 import os
@@ -32,10 +32,10 @@ init_db()
 @app.delete("/issues/{number}/cache")
 def clear_issue_cache(number: int):
     """
-    Clear saved triage/execute/verify for a given issue so the demo can start fresh.
+    Clear saved triage/execute for a given issue so the demo can start fresh.
     Does NOT delete the GitHub issue or PRs; only clears our local/persisted cache.
     """
-    cleared = {"triage": False, "execute": False, "verify": False}
+    cleared = {"triage": False, "execute": False}
 
     # 1) In-memory caches (if you use them)
     global TRIAGE_RUNS, EXEC_RUNS
@@ -53,8 +53,6 @@ def clear_issue_cache(number: int):
             cleared["triage"] = delete_triage(number) or cleared["triage"]
         if "delete_exec" in globals():
             cleared["execute"] = delete_exec(number) or cleared["execute"]
-        if "delete_verify" in globals():
-            cleared["verify"] = delete_verify(number) or cleared["verify"]
     except Exception:
         # Don't fail hard if persistence isn't configured
         pass
@@ -120,13 +118,6 @@ def delete_exec(number: int) -> bool:
     with sqlite3.connect(DB_PATH) as conn:
         cur = conn.cursor()
         cur.execute("DELETE FROM exec_runs WHERE issue_number = ?", (number,))
-        conn.commit()
-        return cur.rowcount > 0
-
-def delete_verify(number: int) -> bool:
-    with sqlite3.connect(DB_PATH) as conn:
-        cur = conn.cursor()
-        cur.execute("DELETE FROM verify_runs WHERE issue_number = ?", (number,))
         conn.commit()
         return cur.rowcount > 0
 
@@ -208,45 +199,9 @@ def sync_triage_with_session(number: int):
 
     return {"ok": True, "synced": True, **get_triage(number)}
 
-@app.post("/issues/{number}/sync-verify")
-def sync_verify_with_session(number: int):
-    """
-    Syncs the verify record with the latest Devin session data.
-    Called by frontend polling to update test results.
-    """
-    verify_record = get_verify(number)
-    if not verify_record:
-        raise HTTPException(status_code=404, detail="No verify record found")
-
-    session_id = verify_record.get("session_id")
-    if not session_id:
-        raise HTTPException(status_code=400, detail="No session_id in verify record")
-
-    # Fetch latest session data from Devin
-    session = get_session(session_id)
-
-    # Extract structured output
-    structured_output = session.get("structured_output") or {}
-
-    # Update the database
-    upsert_verify(
-        issue_number=number,
-        session_id=session_id,
-        session_url=verify_record.get("session_url"),
-        structured_output=structured_output,
-        session=session,
-    )
-
-    return {"ok": True, "synced": True, **get_verify(number)}
-
 @app.get("/issues/{number}/execute")
 def get_execute_record(number: int):
     record = get_exec(number)
-    return record  # Returns None if not found, which is fine
-
-@app.get("/issues/{number}/verify")
-def get_verify_record(number: int):
-    record = get_verify(number)
     return record  # Returns None if not found, which is fine
 
 @app.get("/dashboard", response_class=HTMLResponse)
@@ -447,114 +402,4 @@ STRUCTURED OUTPUT JSON SCHEMA:
     # The frontend polling will update the record with PR and structured output
     return {"cached": False, **get_exec(number)}
 
-
-@app.post("/issues/{number}/verify")
-def verify_pr(number: int, force: bool = Query(False)):
-    """
-    Verifies a PR by running tests on the PR head ref using Devin.
-    This helps determine if the PR is ready to merge and the issue can be closed.
-    """
-    existing_verify = get_verify(number)
-    if existing_verify and not force:
-        return {"cached": True, **existing_verify}
-
-    # Get the execution record to find the PR
-    exec_record = get_exec(number)
-    if not exec_record:
-        raise HTTPException(status_code=400, detail="No execution record found. Run Execute first.")
-
-    pr_url = exec_record.get("pull_request_url")
-    if not pr_url:
-        raise HTTPException(status_code=400, detail="No PR found. Complete execution first.")
-
-    issue = get_issue(number)
-    owner = os.getenv("GITHUB_OWNER")
-    repo = os.getenv("GITHUB_REPO")
-    gh_token = os.getenv("GITHUB_TOKEN")
-
-    if not all([owner, repo, gh_token]):
-        return {"error": "Missing GITHUB_OWNER/GITHUB_REPO/GITHUB_TOKEN in env."}
-
-    repo_url = f"https://github.com/{owner}/{repo}.git"
-
-    # Extract PR number from URL
-    # URL format: https://github.com/{owner}/{repo}/pull/{pr_number}
-    pr_number = pr_url.rstrip('/').split('/')[-1]
-
-    schema = """
-{
-  "tests_run": ["string"],
-  "tests_passed": ["string"],
-  "tests_failed": ["string"],
-  "test_summary": "string",
-  "all_tests_passed": true,
-  "ready_to_merge": true,
-  "issues_found": ["string"],
-  "recommendation": "string"
-}
-""".strip()
-
-    prompt = f"""
-You are Devin. Verify the pull request for GitHub issue #{number} by running all tests on the PR head ref.
-
-Repo: {repo_url}
-Issue #{number}: {issue.get("title")}
-PR: {pr_url}
-
-Requirements:
-1) Clone the repository
-2) Fetch the PR: git fetch origin pull/{pr_number}/head:pr-{pr_number}
-3) Checkout the PR branch: git checkout pr-{pr_number}
-4) Install dependencies if needed
-5) Run ALL tests (pytest, or whatever test framework is configured)
-6) Analyze test results and provide a clear summary
-
-Authentication:
-- You have a session secret named GITHUB_TOKEN
-- Use it for git operations
-
-Git setup:
-1) git clone {repo_url}
-2) cd {repo}
-3) git fetch origin pull/{pr_number}/head:pr-{pr_number}
-4) git checkout pr-{pr_number}
-5) Run tests (check for pytest, npm test, make test, etc.)
-
-IMPORTANT:
-- Populate the STRUCTURED OUTPUT with test results
-- Set all_tests_passed to true ONLY if all tests pass
-- Set ready_to_merge to true if tests pass and code looks good
-- List any issues or concerns in issues_found
-
-STRUCTURED OUTPUT JSON SCHEMA:
-{schema}
-""".strip()
-
-    try:
-        resp = create_session(
-            prompt=prompt,
-            title=f"Verify PR for GH-{number}: {issue.get('title','')[:80]}",
-            tags=["github", f"issue:{number}", "verify", f"pr:{pr_number}"],
-            session_secrets=[
-                {"key": "GITHUB_TOKEN", "value": gh_token, "sensitive": True}
-            ],
-        )
-    except DevinRateLimitError as e:
-        raise HTTPException(status_code=429, detail={"error": str(e), "retry_after_s": e.retry_after_s})
-
-    session_id = resp["session_id"]
-    session_url = resp.get("url")
-
-    # Save initial verify record with session info
-    upsert_verify(
-        issue_number=number,
-        session_id=session_id,
-        session_url=session_url,
-        structured_output={},
-        session={"status_enum": "working"},
-    )
-
-    # Return early so the UI can show the session URL immediately
-    saved = get_verify(number)
-    return {"cached": False, **saved}
 

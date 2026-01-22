@@ -6,7 +6,6 @@ Automated GitHub issue management using Devin - list out issues, scope them and 
 
 - **Triage**: Analyze issues, generate implementation plans, assign confidence scores
 - **Execute**: Automatically implement fixes and create pull requests
-- **Verify**: Run tests on PR branches to confirm merge readiness
 - **Real-time Dashboard**: Monitor Devin sessions with live status updates
 
 ## Setup

@@ -34,16 +34,6 @@ def init_db():
             raw_session_json TEXT
         )
         """)
-        con.execute("""
-        CREATE TABLE IF NOT EXISTS verify_runs (
-            issue_number INTEGER PRIMARY KEY,
-            created_at INTEGER NOT NULL,
-            session_id TEXT NOT NULL,
-            session_url TEXT,
-            structured_output TEXT,
-            raw_session_json TEXT
-        )
-        """)
 
 def get_triage(issue_number: int) -> Optional[dict[str, Any]]:
     with _conn() as con:
@@ -113,39 +103,5 @@ def upsert_exec(issue_number: int, session_id: str, session_url: str | None, str
             session_url,
             json.dumps(structured_output) if structured_output else None,
             pull_request_url,
-            json.dumps(session) if session else None,
-        ))
-
-def get_verify(issue_number: int) -> Optional[dict[str, Any]]:
-    with _conn() as con:
-        row = con.execute("SELECT * FROM verify_runs WHERE issue_number=?", (issue_number,)).fetchone()
-        if not row:
-            return None
-        return {
-            "issue_number": row["issue_number"],
-            "created_at": row["created_at"],
-            "session_id": row["session_id"],
-            "session_url": row["session_url"],
-            "structured_output": json.loads(row["structured_output"]) if row["structured_output"] else None,
-            "session": json.loads(row["raw_session_json"]) if row["raw_session_json"] else None,
-        }
-
-def upsert_verify(issue_number: int, session_id: str, session_url: str | None, structured_output: dict | None, session: dict | None):
-    with _conn() as con:
-        con.execute("""
-        INSERT INTO verify_runs(issue_number, created_at, session_id, session_url, structured_output, raw_session_json)
-        VALUES (?, ?, ?, ?, ?, ?)
-        ON CONFLICT(issue_number) DO UPDATE SET
-            created_at=excluded.created_at,
-            session_id=excluded.session_id,
-            session_url=excluded.session_url,
-            structured_output=excluded.structured_output,
-            raw_session_json=excluded.raw_session_json
-        """, (
-            issue_number,
-            int(time.time()),
-            session_id,
-            session_url,
-            json.dumps(structured_output) if structured_output else None,
             json.dumps(session) if session else None,
         ))
