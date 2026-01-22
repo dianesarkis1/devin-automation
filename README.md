@@ -1,6 +1,6 @@
 # Devin GitHub Automation
 
-Automated GitHub issue management using Devin AI - list out issues, scope them and assign confidence scores, and trigger a session to take the action plan and complete the ticket with simple clicks.
+Automated GitHub issue management using Devin - list out issues, scope them and assign confidence scores, and trigger a session to take the action plan and complete the ticket with simple clicks.
 
 ## Features
 
